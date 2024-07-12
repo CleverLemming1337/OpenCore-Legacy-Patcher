@@ -141,7 +141,7 @@ class macOSInstallerFlashFrame(wx.Frame):
         self.frame_modal = frame_modal
 
 
-    def on_select(self, installer: dict) -> None:
+    def on_select(self, installer: dict, show_all: bool = False) -> None:
         logging.info(f"Selected installer: {installer['Short Name']} ({installer['Version']} ({installer['Build']}))")
         self.frame_modal.Destroy()
 
@@ -165,7 +165,8 @@ class macOSInstallerFlashFrame(wx.Frame):
 
         # Fetch local disks
         def _fetch_disks():
-            self.available_disks = macos_installer_handler.InstallerCreation().list_disk_to_format()
+            print(f"Fetching disks with show_all = {show_all}")
+            self.available_disks = macos_installer_handler.InstallerCreation().list_disk_to_format(show_all)
 
             # Need to clean up output on pre-Sierra
             # Disk images are mixed in with regular disks (ex. payloads.dmg)
@@ -201,7 +202,7 @@ class macOSInstallerFlashFrame(wx.Frame):
             for disk in self.available_disks:
                 logging.info(f" - {disk}: {self.available_disks[disk]['name']} - {utilities.human_fmt(self.available_disks[disk]['size'])}")
                 disk_button = wx.Button(self.frame_modal, label=f"{disk}: {self.available_disks[disk]['name']} - {utilities.human_fmt(self.available_disks[disk]['size'])}", pos=(-1, warning_label.GetPosition()[1] + warning_label.GetSize()[1] + spacer), size=(300, 30))
-                disk_button.Bind(wx.EVT_BUTTON, lambda event, temp=disk: self.on_select_disk(self.available_disks[temp], installer))
+                disk_button.Bind(wx.EVT_BUTTON, lambda event, temp=disk: self.on_select_disk(self.available_disks[temp], installer, show_all))
                 disk_button.Centre(wx.HORIZONTAL)
                 if entries == 1:
                     disk_button.SetDefault()
@@ -221,15 +222,22 @@ class macOSInstallerFlashFrame(wx.Frame):
         cancel_button.Bind(wx.EVT_BUTTON, self.on_return_to_main_menu)
         cancel_button.Centre(wx.HORIZONTAL)
 
+        # Show all disks
+        show_all_checkbox = wx.CheckBox(self.frame_modal, label="Show all disks (Beta)", pos=(-1, cancel_button.GetPosition()[1] + cancel_button.GetSize()[1] - 10), size=(150, 30))
+        show_all_checkbox.Centre(wx.HORIZONTAL)
+        if show_all is True:
+            show_all_checkbox.SetValue(True)
+        show_all_checkbox.Bind(wx.EVT_CHECKBOX, lambda event, temp=installer: self.on_select(temp, show_all_checkbox.GetValue()))
+
         # Set size of frame
-        self.frame_modal.SetSize((-1, cancel_button.GetPosition()[1] + cancel_button.GetSize()[1] + 40))
+        self.frame_modal.SetSize((-1, show_all_checkbox.GetPosition()[1] + show_all_checkbox.GetSize()[1] + 40))
 
         progress_bar_animation.stop_pulse()
 
         self.frame_modal.ShowWindowModal()
 
 
-    def on_select_disk(self, disk: dict, installer: dict) -> None:
+    def on_select_disk(self, disk: dict, installer: dict, is_partition: bool = False) -> None:
         answer = wx.MessageBox(f"Are you sure you want to erase '{disk['name']}'?\nAll data will be lost, this cannot be undone.", "Confirmation", wx.YES_NO | wx.NO_DEFAULT | wx.ICON_QUESTION)
         if answer != wx.YES:
             return
@@ -293,11 +301,13 @@ class macOSInstallerFlashFrame(wx.Frame):
 
         # /dev/diskX -> diskX
         root_disk = disk['identifier'][5:]
-        initial_bytes_written = float(utilities.monitor_disk_output(root_disk))
+
+        # TODO: get value for single partition
+        initial_bytes_written = float(utilities.monitor_disk_output(root_disk)) if not is_partition else 0 # Workaround. iostat does not support single volumes
         self.result = False
         def _flash():
             logging.info(f"Flashing {installer['Path']} to {root_disk}")
-            self.result = self._flash_installer(root_disk)
+            self.result = self._flash_installer(root_disk, is_partition)
 
         thread = threading.Thread(target=_flash)
         thread.start()
@@ -305,7 +315,8 @@ class macOSInstallerFlashFrame(wx.Frame):
         # Wait for installer to be created
         while thread.is_alive():
             try:
-                total_bytes_written = float(utilities.monitor_disk_output(root_disk))
+                # TODO: get value for single partition
+                total_bytes_written = float(utilities.monitor_disk_output(root_disk)) if not is_partition else 0 # Workaround. iostat does not support single volumes
             except:
                 total_bytes_written = initial_bytes_written
             bytes_written = total_bytes_written - initial_bytes_written
@@ -374,7 +385,7 @@ class macOSInstallerFlashFrame(wx.Frame):
         return self.prepare_result
 
 
-    def _flash_installer(self, disk) -> bool:
+    def _flash_installer(self, disk, is_partition: bool = False) -> bool:
         utilities.disable_sleep_while_running()
         logging.info("Creating macOS installer")
 
@@ -385,7 +396,7 @@ class macOSInstallerFlashFrame(wx.Frame):
         with open(self.constants.installer_sh_path, "r") as f:
             logging.info(f"installer.sh contents:\n{f.read()}")
 
-        args   = ["/bin/sh", self.constants.installer_sh_path]
+        args   = ["/bin/sh", self.constants.installer_partition_sh_path if is_partition else self.constants.installer_sh_path]
         result = subprocess_wrapper.run_as_root(args, capture_output=True, text=True)
         output = result.stdout
         error  = result.stderr if result.stderr else ""

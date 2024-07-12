@@ -353,6 +353,10 @@ class Constants:
     def installer_sh_path(self):
         return self.payload_path / Path("Installer.sh")
 
+    @property
+    def installer_partition_sh_path(self):
+        return self.payload_path / Path("Installer_partition.sh")
+    
     # Kexts
     @property
     def payload_kexts_path(self):

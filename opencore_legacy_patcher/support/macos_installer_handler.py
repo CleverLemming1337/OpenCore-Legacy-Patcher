@@ -167,7 +167,7 @@ fi
         return False
 
 
-    def list_disk_to_format(self) -> dict:
+    def list_disk_to_format(self, show_all: bool = False) -> dict:
         """
         List applicable disks for macOS installer creation
         Only lists disks that are:
@@ -184,39 +184,82 @@ fi
         all_disks:  dict = {}
         list_disks: dict = {}
 
-        # TODO: AllDisksAndPartitions is not supported in Snow Leopard and older
-        try:
-            # High Sierra and newer
-            disks = plistlib.loads(subprocess.run(["/usr/sbin/diskutil", "list", "-plist", "physical"], stdout=subprocess.PIPE).stdout.decode().strip().encode())
-        except ValueError:
-            # Sierra and older
+        if show_all:
+            # TODO: AllDisksAndPartitions is not supported in Snow Leopard and older
             disks = plistlib.loads(subprocess.run(["/usr/sbin/diskutil", "list", "-plist"], stdout=subprocess.PIPE).stdout.decode().strip().encode())
+            
 
-        for disk in disks["AllDisksAndPartitions"]:
-            disk_info = plistlib.loads(subprocess.run(["/usr/sbin/diskutil", "info", "-plist", disk["DeviceIdentifier"]], stdout=subprocess.PIPE).stdout.decode().strip().encode())
+            for disk in disks["AllDisksAndPartitions"]:
+                disk_info = plistlib.loads(subprocess.run(["/usr/sbin/diskutil", "info", "-plist", disk["DeviceIdentifier"]], stdout=subprocess.PIPE).stdout.decode().strip().encode())
+                try:
+                    all_disks[disk["DeviceIdentifier"]] = {"identifier": disk_info["DeviceNode"], "name": disk_info["MediaName"], "size": disk_info["TotalSize"], "removable": disk_info["Internal"], "partitions": {}}
+                except KeyError:
+                    # Avoid crashing with CDs installed
+                    continue
+        
+        
+            for disk in disks['AllDisksAndPartitions']:
+                disk_id = disk['DeviceIdentifier']
+
+                # Strip internal disks (avoid user formatting their SSD/HDD)
+                # Ensure user doesn't format their boot drive
+                if not any(all_disks[disk_id]['removable'] is False for partition in all_disks[disk_id]):
+                    continue
+
+                # If disk is an APFS container, use APFSVolumes, else Partitions
+                parts = disk["Partitions"] if "APFSVolumes" not in disk.keys() else disk['APFSVolumes']
+                
+                for part in parts:
+                    # Strip disks that are under 14GB (15,032,385,536 bytes)
+                    # createinstallmedia isn't great at detecting if a disk has enough space
+                    if not part['Size'] > 15_032_385_536:
+                        continue
+                    
+                    try:
+                    
+                        list_disks.update({
+                            part['DeviceIdentifier']: {
+                                "identifier": part['DeviceIdentifier'],
+                                "name": part['VolumeName'],
+                                "size": part['Size'],
+                            }
+                        })
+                    except KeyError:
+                        # This error occurs at `part['VolumeName']` and means that the disk is an APFS container
+                        continue
+        else:
             try:
-                all_disks[disk["DeviceIdentifier"]] = {"identifier": disk_info["DeviceNode"], "name": disk_info["MediaName"], "size": disk_info["TotalSize"], "removable": disk_info["Internal"], "partitions": {}}
-            except KeyError:
-                # Avoid crashing with CDs installed
-                continue
+                # High Sierra and newer
+                disks = plistlib.loads(subprocess.run(["/usr/sbin/diskutil", "list", "-plist", "physical"], stdout=subprocess.PIPE).stdout.decode().strip().encode())
+            except ValueError:
+                # Sierra and older
+                disks = plistlib.loads(subprocess.run(["/usr/sbin/diskutil", "list", "-plist"], stdout=subprocess.PIPE).stdout.decode().strip().encode())
 
-        for disk in all_disks:
-            # Strip disks that are under 14GB (15,032,385,536 bytes)
-            # createinstallmedia isn't great at detecting if a disk has enough space
-            if not any(all_disks[disk]['size'] > 15032385536 for partition in all_disks[disk]):
-                continue
-            # Strip internal disks as well (avoid user formatting their SSD/HDD)
-            # Ensure user doesn't format their boot drive
-            if not any(all_disks[disk]['removable'] is False for partition in all_disks[disk]):
-                continue
+            for disk in disks["AllDisksAndPartitions"]:
+                disk_info = plistlib.loads(subprocess.run(["/usr/sbin/diskutil", "info", "-plist", disk["DeviceIdentifier"]], stdout=subprocess.PIPE).stdout.decode().strip().encode())
+                try:
+                    all_disks[disk["DeviceIdentifier"]] = {"identifier": disk_info["DeviceNode"], "name": disk_info["MediaName"], "size": disk_info["TotalSize"], "removable": disk_info["Internal"], "partitions": {}}
+                except KeyError:
+                    # Avoid crashing with CDs installed
+                    continue
 
-            list_disks.update({
-                disk: {
-                    "identifier": all_disks[disk]["identifier"],
-                    "name": all_disks[disk]["name"],
-                    "size": all_disks[disk]["size"],
-                }
-            })
+            for disk in all_disks:
+                # Strip disks that are under 14GB (15,032,385,536 bytes)
+                # createinstallmedia isn't great at detecting if a disk has enough space
+                if not any(all_disks[disk]['size'] > 15032385536 for partition in all_disks[disk]):
+                    continue
+                # Strip internal disks as well (avoid user formatting their SSD/HDD)
+                # Ensure user doesn't format their boot drive
+                if not any(all_disks[disk]['removable'] is False for partition in all_disks[disk]):
+                    continue
+
+                list_disks.update({
+                    disk: {
+                        "identifier": all_disks[disk]["identifier"],
+                        "name": all_disks[disk]["name"],
+                        "size": all_disks[disk]["size"],
+                    }
+                })
 
         return list_disks
 
